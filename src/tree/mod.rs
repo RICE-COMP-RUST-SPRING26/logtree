@@ -28,18 +28,13 @@ impl<S: PagesStorage> OnDiskTree<S> {
         let branch_dir_pagenum = storage.allocate_page()?;
         BranchDirectoryHeader::write(&storage.get_page(branch_dir_pagenum)?)?;
 
-        let mut branch_info = BranchesInfo {
-            pagenums: boxcar::Vec::new(),
-            branches: boxcar::Vec::new(),
-        };
-        branch_info.pagenums.push(branch_dir_pagenum);
-
         // Create the root log page
         let root_log_pagenum = storage.allocate_page()?;
         LogPageHeader::write(&storage.get_page(root_log_pagenum)?, 0, 0, 0)?;
 
         // Create the entry in the branch index
-        branch_info.create_branch_index_entry(&storage, 0, 0, root_log_pagenum)?;
+        let branches_info = BranchesInfo::new(branch_dir_pagenum);
+        branches_info.create_branch_index_entry(&storage, 0, 0, root_log_pagenum)?;
 
         // Write the header page
         HeaderPage::write(
@@ -56,7 +51,7 @@ impl<S: PagesStorage> OnDiskTree<S> {
         Ok(Self {
             storage,
             document_uuid,
-            branch_dir_pages: RwLock::new(branch_info),
+            branch_dir_pages: RwLock::new(branches_info),
         })
     }
 

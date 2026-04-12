@@ -1,6 +1,7 @@
 use std::io;
 use std::mem::{size_of, offset_of};
-use std::sync::{Mutex, RwLock};
+use std::sync::atomic::AtomicU32;
+use std::sync::Mutex;
 use zerocopy::{FromBytes, IntoBytes, KnownLayout, Immutable};
 
 use crate::tree::storage::{PageHandle, PagesStorage};
@@ -144,18 +145,39 @@ impl BranchDirectoryEntry {
 // ==================== BranchesInfo ====================
 
 pub struct BranchInfo {
-    latest_log_pagenum: RwLock<u32>,
+    latest_log_pagenum: AtomicU32,
     append_lock: Mutex<()>,
+}
+
+impl BranchInfo {
+    fn new(initial_log_pagenum: u32) -> Self {
+        Self {
+            latest_log_pagenum: AtomicU32::new(initial_log_pagenum),
+            append_lock: Mutex::new(()),
+        }
+    }
 }
 
 pub struct BranchesInfo {
     /// Page numbers used for branches
-    pub pagenums: boxcar::Vec<u32>,
+    pagenums: boxcar::Vec<u32>,
     /// Info for each branch
-    pub branches: boxcar::Vec<BranchInfo>
+    branches: boxcar::Vec<BranchInfo>,
+    /// Must be locked when adding a branch
+    add_branch_lock: Mutex<()>,
 }
 
 impl BranchesInfo {
+    pub fn new(initial_page: u32) -> Self {
+        let pagenums = boxcar::Vec::new();
+        pagenums.push(initial_page);
+        Self {
+            pagenums,
+            branches: boxcar::Vec::new(),
+            add_branch_lock: Mutex::new(()),
+        }
+    }
+
     pub fn load(storage: &impl PagesStorage, initial_pagenum: u32) -> io::Result<Self> {
         let pagenums = boxcar::Vec::new();
         let branches = boxcar::Vec::new();
@@ -177,12 +199,9 @@ impl BranchesInfo {
                         1 => entry.latest_log_pagenum_1,
                         _ => return Err(io::Error::new(io::ErrorKind::Other, "Invalid active_latest_log_pagenum value")),
                     };
-                    branches.push(BranchInfo {
-                        latest_log_pagenum: RwLock::new(pagenum),
-                        append_lock: Mutex::new(()),
-                    });
+                    branches.push(BranchInfo::new(pagenum));
                 }
-                return Ok(Self { pagenums, branches });
+                return Ok(Self { pagenums, branches, add_branch_lock: Mutex::new(()) });
             }
 
             // Full page — all slots are committed
@@ -194,10 +213,7 @@ impl BranchesInfo {
                     1 => entry.latest_log_pagenum_1,
                     _ => return Err(io::Error::new(io::ErrorKind::Other, "Invalid active_latest_log_pagenum value")),
                 };
-                branches.push(BranchInfo {
-                    latest_log_pagenum: RwLock::new(pagenum),
-                    append_lock: Mutex::new(()),
-                });
+                branches.push(BranchInfo::new(pagenum));
             }
 
             current_pagenum = header.next_pagenum as u32;
@@ -205,12 +221,14 @@ impl BranchesInfo {
     }
 
     pub fn create_branch_index_entry(
-        &mut self,
+        &self,
         storage: &impl PagesStorage,
         parent_branch_num: u32,
         parent_sequence_num: u64,
         initial_log_pagenum: u32,
     ) -> io::Result<u32> {
+        let _guard = self.add_branch_lock.lock();
+
         let branch_num = self.branches.count() as u32;
         let index_in_page = branch_num % BRANCHES_PER_PAGE;
 
@@ -242,7 +260,30 @@ impl BranchesInfo {
             initial_log_pagenum,
         )?;
 
-        self.branches.push(initial_log_pagenum);
+        self.branches.push(BranchInfo::new(initial_log_pagenum));
         Ok(branch_num)
+    }
+
+    pub fn update_branch_log_pagenum(
+        &self,
+        storage: &impl PagesStorage,
+        branch_num: u32,
+        new_log_pagenum: u32,
+    ) -> io::Result<()> {
+        let branch_info = self.branches.get(branch_num as usize)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Invalid branch number"))?;
+
+        // Update on disk
+        let index_in_page = branch_num % BRANCHES_PER_PAGE;
+        let page_index = (branch_num / BRANCHES_PER_PAGE) as usize;
+        let pagenum = self.pagenums.get(page_index)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Invalid page index"))?;
+        let page = storage.get_page(*pagenum)?;
+        BranchDirectoryEntry::write_latest_log_pagenum(&page, storage, index_in_page, new_log_pagenum)?;
+
+        // Update in-memory
+        branch_info.latest_log_pagenum.store(new_log_pagenum, std::sync::atomic::Ordering::SeqCst);
+
+        return Ok(());
     }
 }
