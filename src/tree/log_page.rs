@@ -5,9 +5,9 @@ use std::mem::size_of;
 use zerocopy::{TryFromBytes, IntoBytes, KnownLayout, Immutable};
 
 
-const PAGE_TYPE_LOG: u8 = 2;
-const LOG_HEADER_SIZE: u32 = size_of::<LogPageHeader>() as u32;
-const LOG_ENTRY_HEADER_SIZE: u32 = size_of::<LogEntryHeader>() as u32;
+pub const PAGE_TYPE_LOG: u8 = 2;
+pub const LOG_HEADER_SIZE: u32 = size_of::<LogPageHeader>() as u32;
+pub const LOG_ENTRY_HEADER_SIZE: u32 = size_of::<LogEntryHeader>() as u32;
 
 // ==================== Log Header ====================
 
@@ -92,20 +92,21 @@ impl LogEntryHeader {
     pub fn write_with_data(
         page: &impl PageHandle,
         offset: u32,
-        storage_mode: StorageMode,
-        data_length: u32,
+        is_overflow: bool,
         data: &[u8],
     ) -> io::Result<Self> {
+        assert!(offset + LOG_ENTRY_HEADER_SIZE + (data.len() as u32) < PAGE_SIZE);
+
         let header = Self {
             committed: 0,
-            storage_mode,
+            storage_mode: if is_overflow { StorageMode::Overflow } else { StorageMode::Inline },
             _padding: [0; 2],
-            data_length,
+            data_length: data.len() as u32,
         };
         page.write_type(offset, &header)?;
 
         // Write the data at the end
-        let data_offset = offset + (size_of::<Self>() as u32);
+        let data_offset = offset + LOG_ENTRY_HEADER_SIZE;
         page.write(data_offset, data)?;
 
         // Atomically mark as committed

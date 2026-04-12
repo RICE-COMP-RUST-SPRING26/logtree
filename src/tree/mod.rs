@@ -5,11 +5,14 @@ mod overflow_page;
 mod storage;
 
 use std::io;
-use std::sync::{Mutex, RwLock};
+use std::sync::Mutex;
 
 use crate::tree::branch_page::{BranchDirectoryHeader, BranchesInfo};
 use crate::tree::header_page::HeaderPage;
-use crate::tree::log_page::{LogEntryHeader, LogPageHeader};
+use crate::tree::log_page::{
+    LogEntryHeader, LogPageHeader, LOG_ENTRY_HEADER_SIZE, LOG_HEADER_SIZE,
+};
+use crate::tree::overflow_page::write_overflow;
 use crate::tree::storage::PagesStorage;
 
 pub const PAGE_SIZE: u32 = 4096;
@@ -65,10 +68,7 @@ impl<S: PagesStorage> OnDiskTree<S> {
 
     /// Returns (pagenum, page header)
     pub fn find_node_page(&self, branch_num: u32, seq: u64) -> TreeResult<(u32, LogPageHeader)> {
-        let mut pagenum = self
-            .branches
-            .branch_log_pagenum(branch_num)
-            .ok_or(TreeError::BranchNotFound)?;
+        let mut pagenum = self.branches.branch_log_pagenum(branch_num)?;
         let mut header = LogPageHeader::read(&self.storage.get_page(pagenum)?)?;
 
         while header.first_sequence_num > seq {
@@ -137,6 +137,53 @@ impl<S: PagesStorage> OnDiskTree<S> {
         }
 
         return Ok(vec![]);
+    }
+
+    pub const MAX_INLINE_BYTES: usize = 1024;
+    pub fn append_to_branch(&self, branch_num: u32, payload: &[u8]) -> TreeResult<u64> {
+        let mut guard = self.branches.lock_branch_for_append(branch_num)?;
+        let mut offset = guard.offset;
+        let seq = guard.seq_num;
+
+        let mut log_pagenum = self.branches.branch_log_pagenum(branch_num)?;
+
+        let do_overflow = payload.len() > Self::MAX_INLINE_BYTES;
+
+        let overflow_page_buffer: [u8; 4];
+        let data: &[u8] = if do_overflow {
+            let overflow_page = write_overflow(&self.storage, payload)?;
+            overflow_page_buffer = overflow_page.to_le_bytes();
+            &overflow_page_buffer.as_slice()
+        } else {
+            payload
+        };
+
+        // Allocate a new log page if necessary
+        let available = PAGE_SIZE - offset;
+        if (LOG_ENTRY_HEADER_SIZE + data.len() as u32) > available {
+            // Allocate and format the new page
+            let new_pagenum = self.storage.allocate_page()?;
+            let new_page = self.storage.get_page(new_pagenum)?;
+            LogPageHeader::write(&new_page, branch_num, log_pagenum, seq)?;
+
+            // Write it to the branch index entry
+            self.branches
+                .update_log_pagenum(&self.storage, branch_num, new_pagenum)?;
+
+            // Update the variables
+            log_pagenum = new_pagenum;
+            offset = LOG_HEADER_SIZE;
+        }
+
+        // Write the new entry to the log page
+        let page = self.storage.get_page(log_pagenum)?;
+        let entry = LogEntryHeader::write_with_data(&page, offset, do_overflow, data)?;
+
+        // Update the cached next offset and next seq
+        guard.offset = entry.next_offset(offset);
+        guard.seq_num = seq + 1;
+
+        return Ok(seq);
     }
 }
 

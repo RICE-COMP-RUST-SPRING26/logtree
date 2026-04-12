@@ -1,12 +1,12 @@
 use std::io;
 use std::mem::{size_of, offset_of};
 use std::sync::atomic::AtomicU32;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use zerocopy::{FromBytes, IntoBytes, KnownLayout, Immutable};
 
-use crate::tree::log_page::LogPageHeader;
+use crate::tree::log_page::{LOG_HEADER_SIZE, LogEntryHeader, LogPageHeader};
 use crate::tree::storage::{PageHandle, PagesStorage};
-use crate::tree::PAGE_SIZE;
+use crate::tree::{PAGE_SIZE, TreeError, TreeResult};
 
 const PAGE_TYPE_BRANCH_DIRECTORY: u8 = 1;
 const BRANCH_DIR_HEADER_SIZE: u32 = size_of::<BranchDirectoryHeader>() as u32;
@@ -145,16 +145,35 @@ impl BranchDirectoryEntry {
 
 // ==================== BranchesInfo ====================
 
+pub struct NextNodeInfo {
+    pub offset: u32,
+    pub seq_num: u64,
+}
+
+impl NextNodeInfo {
+    pub fn detect(page: &impl PageHandle) -> io::Result<Self> {
+        let mut next_offset = LOG_HEADER_SIZE;
+        let mut next_seq = LogPageHeader::read(page)?.first_sequence_num;
+
+        while let Some(entry) = LogEntryHeader::read(page, next_offset)? {
+            next_offset = entry.next_offset(next_offset);
+            next_seq += 1;
+        }
+        return Ok(NextNodeInfo { offset: next_offset, seq_num: next_seq });
+    }
+}
+
 pub struct BranchInfo {
     latest_log_pagenum: AtomicU32,
-    append_lock: Mutex<()>,
+    /// Holds (offset, seq_num) for the last node in the branch
+    last_node: Mutex<NextNodeInfo>,
 }
 
 impl BranchInfo {
-    fn new(initial_log_pagenum: u32) -> Self {
+    fn new(initial_log_pagenum: u32, next: NextNodeInfo) -> Self {
         Self {
             latest_log_pagenum: AtomicU32::new(initial_log_pagenum),
-            append_lock: Mutex::new(()),
+            last_node: Mutex::new(next),
         }
     }
 }
@@ -190,31 +209,30 @@ impl BranchesInfo {
             let page = storage.get_page(current_pagenum)?;
             let header = BranchDirectoryHeader::read(&page)?;
 
-            if header.next_page_committed == 0 {
-                // This is the last page — scan for committed entries
-                for i in 0..BRANCHES_PER_PAGE {
-                    let entry = BranchDirectoryEntry::read(&page, i)?;
-                    let Some(entry) = entry else { break };
-                    let pagenum = match entry.active_latest_log_pagenum {
-                        0 => entry.latest_log_pagenum_0,
-                        1 => entry.latest_log_pagenum_1,
-                        _ => return Err(io::Error::new(io::ErrorKind::Other, "Invalid active_latest_log_pagenum value")),
-                    };
-                    branches.push(BranchInfo::new(pagenum));
-                }
-                return Ok(Self { pagenums, branches, add_branch_lock: Mutex::new(()) });
-            }
+            let is_last_page = header.next_page_committed == 0;
 
             // Full page — all slots are committed
             for i in 0..BRANCHES_PER_PAGE {
-                let entry = BranchDirectoryEntry::read(&page, i)?
-                    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Uncommitted entry on full page"))?;
+                let Some(entry) = BranchDirectoryEntry::read(&page, i)? else {
+                    if is_last_page {
+                        break;
+                    } else {
+                        return Err(io::Error::new(io::ErrorKind::Other, "Uncommitted entry on full page"));
+                    }
+                };
                 let pagenum = match entry.active_latest_log_pagenum {
                     0 => entry.latest_log_pagenum_0,
                     1 => entry.latest_log_pagenum_1,
                     _ => return Err(io::Error::new(io::ErrorKind::Other, "Invalid active_latest_log_pagenum value")),
                 };
-                branches.push(BranchInfo::new(pagenum));
+
+                // Find the next available offset on the log page
+                let log_page = storage.get_page(pagenum)?;
+                branches.push(BranchInfo::new(pagenum, NextNodeInfo::detect(&log_page)?));
+            }
+
+            if is_last_page {
+                return Ok(Self { pagenums, branches, add_branch_lock: Mutex::new(()) });
             }
 
             current_pagenum = header.next_pagenum as u32;
@@ -266,18 +284,26 @@ impl BranchesInfo {
             log_pagenum,
         )?;
 
-        self.branches.push(BranchInfo::new(log_pagenum));
+        self.branches.push(BranchInfo::new(log_pagenum, NextNodeInfo {
+            offset: LOG_HEADER_SIZE,
+            seq_num: parent_seq + 1,
+        }));
         Ok(branch_num)
     }
 
-    pub fn update_branch_log_pagenum(
+    pub fn lock_branch_for_append(&self, branch_num: u32) -> TreeResult<MutexGuard<NextNodeInfo>> {
+        let info = self.branches.get(branch_num as usize).ok_or(TreeError::BranchNotFound)?;
+        return Ok(info.last_node.lock().unwrap());
+    }
+
+    pub fn update_log_pagenum(
         &self,
         storage: &impl PagesStorage,
         branch_num: u32,
         new_log_pagenum: u32,
-    ) -> io::Result<()> {
+    ) -> TreeResult<()> {
         let branch_info = self.branches.get(branch_num as usize)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Invalid branch number"))?;
+            .ok_or(TreeError::BranchNotFound)?;
 
         // Update on disk
         let index_in_page = branch_num % BRANCHES_PER_PAGE;
@@ -293,8 +319,9 @@ impl BranchesInfo {
         return Ok(());
     }
 
-    pub fn branch_log_pagenum(&self, branch_num: u32) -> Option<u32> {
-        let branch_info = self.branches.get(branch_num as usize)?;
-        Some(branch_info.latest_log_pagenum.load(std::sync::atomic::Ordering::SeqCst))
+    pub fn branch_log_pagenum(&self, branch_num: u32) -> TreeResult<u32> {
+        let branch_info = self.branches.get(branch_num as usize)
+            .ok_or(TreeError::BranchNotFound)?;
+        Ok(branch_info.latest_log_pagenum.load(std::sync::atomic::Ordering::SeqCst))
     }
 }
