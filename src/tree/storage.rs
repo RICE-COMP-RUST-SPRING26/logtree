@@ -9,6 +9,8 @@ use fs4::fs_std::FileExt as LockExt;
 
 
 pub trait PageHandle {
+    fn sync(&self) -> io::Result<()>;
+
     fn read(&self, offset: u32, buf: &mut [u8]) -> io::Result<()>;
     fn write(&self, offset: u32, buf: &[u8]) -> io::Result<()>;
 
@@ -79,6 +81,10 @@ impl Drop for FilePagesStorage {
 }
 
 impl PageHandle for FilePageHandle<'_> {
+    fn sync(&self) -> io::Result<()> {
+        self.file.sync_data()
+    }
+
     fn read(&self, offset: u32, buf: &mut [u8]) -> io::Result<()> {
         let abs_offset = self.index as u64 * self.page_size as u64 + offset as u64;
         self.file.read_exact_at(buf, abs_offset)
