@@ -2,6 +2,7 @@ mod branch_page;
 mod header_page;
 mod log_page;
 mod overflow_page;
+mod print;
 mod storage;
 
 use std::io;

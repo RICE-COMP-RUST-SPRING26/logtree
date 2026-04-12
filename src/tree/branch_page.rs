@@ -8,10 +8,10 @@ use crate::tree::log_page::{LOG_HEADER_SIZE, LogEntryHeader, LogPageHeader};
 use crate::tree::storage::{PageHandle, PagesStorage};
 use crate::tree::{PAGE_SIZE, TreeError, TreeResult};
 
-const PAGE_TYPE_BRANCH_DIRECTORY: u8 = 1;
-const BRANCH_DIR_HEADER_SIZE: u32 = size_of::<BranchDirectoryHeader>() as u32;
-const BRANCH_DIR_ENTRY_SIZE: u32 = size_of::<BranchDirectoryEntry>() as u32;
-const BRANCHES_PER_PAGE: u32 = (PAGE_SIZE - BRANCH_DIR_HEADER_SIZE) / BRANCH_DIR_ENTRY_SIZE;
+pub const PAGE_TYPE_BRANCH_DIRECTORY: u8 = 1;
+pub const BRANCH_DIR_HEADER_SIZE: u32 = size_of::<BranchDirectoryHeader>() as u32;
+pub const BRANCH_DIR_ENTRY_SIZE: u32 = size_of::<BranchDirectoryEntry>() as u32;
+pub const BRANCHES_PER_PAGE: u32 = (PAGE_SIZE - BRANCH_DIR_HEADER_SIZE) / BRANCH_DIR_ENTRY_SIZE;
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]

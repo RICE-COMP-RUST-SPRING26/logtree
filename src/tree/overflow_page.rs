@@ -5,9 +5,9 @@ use zerocopy::{FromBytes, IntoBytes, KnownLayout, Immutable};
 use crate::tree::storage::{PageHandle, PagesStorage};
 use crate::tree::PAGE_SIZE;
 
-const PAGE_TYPE_OVERFLOW: u8 = 3;
-const OVERFLOW_HEADER_SIZE: u32 = size_of::<OverflowHeader>() as u32;
-const OVERFLOW_PAYLOAD_PER_PAGE: u32 = PAGE_SIZE - OVERFLOW_HEADER_SIZE;
+pub const PAGE_TYPE_OVERFLOW: u8 = 3;
+pub const OVERFLOW_HEADER_SIZE: u32 = size_of::<OverflowHeader>() as u32;
+pub const OVERFLOW_PAYLOAD_PER_PAGE: u32 = PAGE_SIZE - OVERFLOW_HEADER_SIZE;
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
