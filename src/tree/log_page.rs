@@ -95,7 +95,7 @@ impl LogEntryHeader {
         storage_mode: StorageMode,
         data_length: u32,
         data: &[u8],
-    ) -> io::Result<()> {
+    ) -> io::Result<Self> {
         let header = Self {
             committed: 0,
             storage_mode,
@@ -111,7 +111,7 @@ impl LogEntryHeader {
         // Atomically mark as committed
         page.write_type(offset, &1u8)?;
 
-        Ok(())
+        Ok(header)
     }
 
     pub fn next_offset(&self, self_offset: u32) -> u32 {
@@ -142,3 +142,4 @@ impl LogEntryHeader {
         }
     }
 }
+

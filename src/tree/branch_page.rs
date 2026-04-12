@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicU32;
 use std::sync::Mutex;
 use zerocopy::{FromBytes, IntoBytes, KnownLayout, Immutable};
 
+use crate::tree::log_page::LogPageHeader;
 use crate::tree::storage::{PageHandle, PagesStorage};
 use crate::tree::PAGE_SIZE;
 
@@ -220,19 +221,24 @@ impl BranchesInfo {
         }
     }
 
-    pub fn create_branch_index_entry(
+    pub fn create_branch(
         &self,
         storage: &impl PagesStorage,
-        parent_branch_num: u32,
-        parent_sequence_num: u64,
-        initial_log_pagenum: u32,
+        parent_branch: u32,
+        parent_seq: u64,
+        log_pagenum: u32,
+        parent_log_pagenum: u32,
     ) -> io::Result<u32> {
         let _guard = self.add_branch_lock.lock();
 
         let branch_num = self.branches.count() as u32;
         let index_in_page = branch_num % BRANCHES_PER_PAGE;
 
-        // Check if this branch will require creating a new page
+        // Write the log page header
+        let log_page = storage.get_page(log_pagenum)?;
+        LogPageHeader::write(&log_page, branch_num, parent_log_pagenum, parent_seq + 1)?;
+
+        // Check if this branch will require creating a new index page
         if index_in_page == 0 && branch_num > 0 {
             // Allocate a new branch directory page and write the header
             let new_pagenum = storage.allocate_page()?;
@@ -255,12 +261,12 @@ impl BranchesInfo {
             &page,
             storage,
             index_in_page,
-            parent_branch_num,
-            parent_sequence_num,
-            initial_log_pagenum,
+            parent_branch,
+            parent_seq,
+            log_pagenum,
         )?;
 
-        self.branches.push(BranchInfo::new(initial_log_pagenum));
+        self.branches.push(BranchInfo::new(log_pagenum));
         Ok(branch_num)
     }
 
@@ -287,9 +293,8 @@ impl BranchesInfo {
         return Ok(());
     }
 
-    pub fn branch_log_pagenum(&self, branch_num: u32) -> io::Result<u32> {
-        let branch_info = self.branches.get(branch_num as usize)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Invalid branch number"))?;
-        Ok(branch_info.latest_log_pagenum.load(std::sync::atomic::Ordering::SeqCst))
+    pub fn branch_log_pagenum(&self, branch_num: u32) -> Option<u32> {
+        let branch_info = self.branches.get(branch_num as usize)?;
+        Some(branch_info.latest_log_pagenum.load(std::sync::atomic::Ordering::SeqCst))
     }
 }
