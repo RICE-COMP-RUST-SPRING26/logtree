@@ -5,6 +5,9 @@ mod overflow_page;
 mod print;
 mod storage;
 
+#[cfg(test)]
+mod tests;
+
 pub use print::print_tree;
 pub use storage::FilePagesStorage;
 
@@ -199,8 +202,9 @@ impl<S: PagesStorage> OnDiskTree<S> {
     }
 }
 
-// ==================== Error types ====================
+// ==================== Error type ====================
 
+#[derive(Debug)]
 pub enum TreeError {
     BranchNotFound,
     IoError(io::Error),
