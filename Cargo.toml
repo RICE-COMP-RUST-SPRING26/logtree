@@ -1,0 +1,8 @@
+[package]
+name = "finalproject"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fs4 = "0.13.1"
+zerocopy = "0.8.48"
