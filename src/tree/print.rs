@@ -16,9 +16,9 @@ use crate::tree::HeaderPage;
 use std::io;
 
 impl HeaderPage {
-    pub fn print(page: &impl PageHandle) -> io::Result<()> {
+    pub fn print(page: &impl PageHandle, pagenum: u32) -> io::Result<()> {
         let header = Self::read(page)?;
-        println!("=== Header Page ===");
+        println!("[{}] Header Page", pagenum);
         println!("  version: {}", header.version);
         println!("  document_uuid: {:032x}", header.document_uuid);
         println!("  branch_dir_pagenum: {}", header.branch_dir_pagenum);
@@ -27,9 +27,9 @@ impl HeaderPage {
 }
 
 impl BranchDirectoryHeader {
-    pub fn print(page: &impl PageHandle) -> io::Result<()> {
+    pub fn print(page: &impl PageHandle, pagenum: u32) -> io::Result<()> {
         let header = Self::read(page)?;
-        println!("=== Branch Directory Page ===");
+        println!("[{}] Branch Directory Page", pagenum);
         println!("  next_page_committed: {}", header.next_page_committed);
         println!("  next_pagenum: {}", header.next_pagenum);
 
@@ -55,9 +55,9 @@ impl BranchDirectoryHeader {
 }
 
 impl LogPageHeader {
-    pub fn print(page: &impl PageHandle) -> io::Result<()> {
+    pub fn print(page: &impl PageHandle, pagenum: u32) -> io::Result<()> {
         let header = Self::read(page)?;
-        println!("=== Log Page ===");
+        println!("[{}] Log Page", pagenum);
         println!("  branch_num: {}", header.branch_num);
         println!("  prev_branch_pagenum: {}", header.prev_branch_pagenum);
         println!("  first_sequence_num: {}", header.first_sequence_num);
@@ -77,9 +77,9 @@ impl LogPageHeader {
 }
 
 impl OverflowHeader {
-    pub fn print(page: &impl PageHandle) -> io::Result<()> {
+    pub fn print(page: &impl PageHandle, pagenum: u32) -> io::Result<()> {
         let header = Self::read(page)?;
-        println!("=== Overflow Page ===");
+        println!("[{}] Overflow Page", pagenum);
         println!("  total_length: {}", header.total_length);
         println!("  next_overflow_pagenum: {}", header.next_overflow_pagenum);
         Ok(())
@@ -89,7 +89,7 @@ impl OverflowHeader {
 pub fn print_tree(storage: &impl PagesStorage) -> io::Result<()> {
     // Page 0 is always the header
     let page0 = storage.get_page(0)?;
-    HeaderPage::print(&page0)?;
+    HeaderPage::print(&page0, 0)?;
 
     let mut pagenum: u32 = 1;
     loop {
@@ -103,12 +103,12 @@ pub fn print_tree(storage: &impl PagesStorage) -> io::Result<()> {
             Err(_) => break,
         };
 
-        println!("\n--- Page {} (type={}) ---", pagenum, page_type);
+        println!("");
         match page_type {
-            x if x == PAGE_TYPE_BRANCH_DIRECTORY => BranchDirectoryHeader::print(&page)?,
-            x if x == PAGE_TYPE_LOG => LogPageHeader::print(&page)?,
-            x if x == PAGE_TYPE_OVERFLOW => OverflowHeader::print(&page)?,
-            _ => println!("  (unknown page type)"),
+            x if x == PAGE_TYPE_BRANCH_DIRECTORY => BranchDirectoryHeader::print(&page, pagenum)?,
+            x if x == PAGE_TYPE_LOG => LogPageHeader::print(&page, pagenum)?,
+            x if x == PAGE_TYPE_OVERFLOW => OverflowHeader::print(&page, pagenum)?,
+            x => println!("=== UNKNOWN TYPE: {x} (page {pagenum}) ==="),
         }
 
         pagenum += 1;

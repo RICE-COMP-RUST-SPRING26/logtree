@@ -1,6 +1,9 @@
+#![allow(warnings)]
+
 mod tree;
+mod cli;
 
 
-fn main() {
-    println!("Hello, world!");
+fn main() -> std::io::Result<()> {
+    cli::run_cli()
 }

@@ -5,6 +5,9 @@ mod overflow_page;
 mod print;
 mod storage;
 
+pub use print::print_tree;
+pub use storage::FilePagesStorage;
+
 use std::io;
 use std::sync::Mutex;
 
@@ -109,19 +112,26 @@ impl<S: PagesStorage> OnDiskTree<S> {
         let mut go_until_seq = end_seq;
 
         loop {
-            let offset = LogEntryHeader::FIRST_OFFSET;
+            let mut offset = LogEntryHeader::FIRST_OFFSET;
             let page = self.storage.get_page(log_pagenum)?;
             let mut page_payloads = vec![];
 
+            // Iterate through nodes on this page
             for seq in log_header.first_sequence_num..=go_until_seq {
                 let entry = LogEntryHeader::read(&page, offset)?.ok_or(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
-                    "Unexpected end of log page",
+                    if go_until_seq == end_seq {
+                        "End index out of range"
+                    } else {
+                        "Unexpected end of log page"
+                    },
                 ))?;
 
                 if seq >= start_seq {
                     page_payloads.push(entry.read_payload(&self.storage, &page, offset)?);
                 }
+
+                offset = entry.next_offset(offset);
             }
 
             // Add the payloads from this page to the combined vec
@@ -137,7 +147,8 @@ impl<S: PagesStorage> OnDiskTree<S> {
             log_header = LogPageHeader::read(&self.storage.get_page(log_pagenum)?)?;
         }
 
-        return Ok(vec![]);
+        payloads_reverse.reverse();
+        return Ok(payloads_reverse);
     }
 
     pub const MAX_INLINE_BYTES: usize = 1024;
