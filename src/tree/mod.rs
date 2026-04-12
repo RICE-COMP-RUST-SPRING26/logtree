@@ -1,5 +1,6 @@
 mod branch_page;
 mod header_page;
+mod overflow_page;
 mod storage;
 
 use std::io;
@@ -8,6 +9,8 @@ use std::sync::RwLock;
 use crate::tree::branch_page::{BranchDirectoryHeader, BranchesInfo};
 use crate::tree::header_page::HeaderPage;
 use crate::tree::storage::PagesStorage;
+
+pub const PAGE_SIZE: u32 = 4096;
 
 pub struct OnDiskTree<S: PagesStorage> {
     storage: S,

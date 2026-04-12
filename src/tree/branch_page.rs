@@ -45,6 +45,20 @@ impl BranchDirectoryHeader {
         };
         page.write_type(0, &header)
     }
+
+    /// Writes the next page pointer, syncs, then atomically marks it as committed.
+    pub fn set_next_page(
+        page: &impl PageHandle,
+        storage: &impl PagesStorage,
+        next_pagenum: u32,
+    ) -> io::Result<()> {
+        // Write the pointer first
+        page.write_type(8, &next_pagenum)?;
+        storage.sync();
+        // Atomically mark as committed
+        page.write_type(1, &1u8)?;
+        Ok(())
+    }
 }
 
 impl BranchDirectoryEntry {
@@ -53,7 +67,6 @@ impl BranchDirectoryEntry {
         page.read_type(offset)
     }
 
-    // Count how many committed branches exist on the current page
     pub fn committed_count(page: &impl PageHandle) -> io::Result<u32> {
         let mut count = 0;
         for i in 0..BRANCHES_PER_PAGE {
@@ -64,6 +77,34 @@ impl BranchDirectoryEntry {
             count += 1;
         }
         Ok(count)
+    }
+
+    /// Writes the entry uncommitted, syncs, then atomically marks it as committed.
+    pub fn write_and_commit(
+        page: &impl PageHandle,
+        storage: &impl PagesStorage,
+        index: u32,
+        parent_branch_num: u32,
+        parent_sequence_num: u64,
+        initial_log_pagenum: u32,
+    ) -> io::Result<()> {
+        let offset = BRANCH_DIR_HEADER_SIZE + index * BRANCH_DIR_ENTRY_SIZE;
+
+        let entry = BranchDirectoryEntry {
+            branch_committed: 0,
+            current_op_pagenum: 0,
+            _padding: [0; 2],
+            parent_branch_num,
+            parent_sequence_num,
+            latest_op_pagenum_0: initial_log_pagenum,
+            latest_op_pagenum_1: 0,
+        };
+
+        page.write_type(offset, &entry)?;
+        storage.sync();
+        // Atomically mark as committed
+        page.write_type(offset, &1u8);
+        Ok(())
     }
 }
 
@@ -97,8 +138,6 @@ impl BranchesInfo {
         }
     }
 
-    /// Creates a new branch in the directory, returning the new branch number.
-    /// Allocates a new directory page if the current one is full.
     pub fn create_branch(
         &mut self,
         storage: &impl PagesStorage,
@@ -109,20 +148,13 @@ impl BranchesInfo {
         let branch_num = self.count;
         let index_in_page = branch_num % BRANCHES_PER_PAGE;
 
-        // If the current directory page is full, allocate a new one
-        // and link it from the previous page.
         if index_in_page == 0 && self.count > 0 {
             let new_pagenum = storage.allocate_page()?;
             BranchDirectoryHeader::write(&storage.get_page(new_pagenum)?)?;
 
-            // Link the previous page to the new one.
-            // Write the pointer first, then set committed, so a crash
-            // between the two leaves the link invisible.
             let prev_pagenum = *self.pagenums.last().unwrap();
             let prev_page = storage.get_page(prev_pagenum)?;
-            prev_page.write_type(4, &new_pagenum)?;
-            storage.sync(); // Sync the page before comitting
-            prev_page.write_type(1, &1u8)?;
+            BranchDirectoryHeader::set_next_page(&prev_page, storage, new_pagenum)?;
 
             self.pagenums.push(new_pagenum);
         }
@@ -130,23 +162,14 @@ impl BranchesInfo {
         let last_pagenum = *self.pagenums.last().unwrap();
         let page = storage.get_page(last_pagenum)?;
 
-        // Write the entry with branch_committed = 0 first
-        let entry = BranchDirectoryEntry {
-            branch_committed: 0,
-            current_op_pagenum: 0,
-            _padding: [0; 2],
+        BranchDirectoryEntry::write_and_commit(
+            &page,
+            storage,
+            index_in_page,
             parent_branch_num,
             parent_sequence_num,
-            latest_op_pagenum_0: initial_log_pagenum,
-            latest_op_pagenum_1: 0,
-        };
-
-        let offset = BRANCH_DIR_HEADER_SIZE + index_in_page * BRANCH_DIR_ENTRY_SIZE;
-        page.write_type(offset, &entry)?;
-        storage.sync();
-
-        // Now atomically mark the branch as committed
-        page.write_type(offset, &1u8)?;
+            initial_log_pagenum,
+        )?;
 
         self.count += 1;
         Ok(branch_num)
