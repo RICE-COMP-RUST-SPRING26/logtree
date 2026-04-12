@@ -4,19 +4,19 @@ A persistent, append-only tree optimized for high throughput when adding nodes t
 
 ## Running with the cli
 
-`logtree create <file> [--uuid <hex>]`
+`logtree create <file> [--uuid <hex>]` \\
 Create a new tree file, optionally with a specific UUID.
 
-`logtree print <file>`
+`logtree print <file>` \\
 Dump the full page structure of a tree file.
 
-`logtree append <file> --data <string> [--branch <n>]`
+`logtree append <file> --data <string> [--branch <n>]` \\
 Append data to a branch (defaults to branch 0).
 
-`logtree read <file> --start <seq> --end <seq> [--branch <n>]`
+`logtree read <file> --start <seq> --end <seq> [--branch <n>]` \\
 Read a range of entries from a branch (defaults to branch 0).
 
-`logtree add-branch <file> --parent-branch <n> --parent-seq <seq>`
+`logtree add-branch <file> --parent-branch <n> --parent-seq <seq>` \\
 Fork a new branch from a parent branch at a given sequence number.
 
 ## Datastructure Layout
@@ -29,8 +29,15 @@ The data-structure has notions of “nodes” and “branches”.
 
 Here is a simple example:
 
-| *`Branch A`* `(root) Node A1 (global root) Node A2 Node A3 Node A4 Node A5 Node A6 Node A7` | *`Branch B`* `Parent: A4 Node B5 Node B6 Node B7 Node B8 Node B9`  | *`Branch C`* `Parent: B7 Node C8 Node C9 Node C10 Node C11`  |
-| :---- | :---- | :---- |
+| Branch A (root) | Branch B (Parent: A4) | Branch C (Parent: B7) |
+|---|---|---|
+| `Node A1 (global root)` | `Node B5` | `Node C8` |
+| `Node A2` | `Node B6` | `Node C9` |
+| `Node A3` | `Node B7` | `Node C10` |
+| `Node A4` | `Node B8` | `Node C11` |
+| `Node A5` | `Node B9` | |
+| `Node A6` | | |
+| `Node A7` | | |
 
 In this case, *Branch B* is comprised of the nodes A1,A2,A3,A4,B5,B6,B7,B8,B9, and *Branch C* is comprised of the nodes A1,A2,A3,A4,B5,B6,B7,C8,C9,C10,C11.
 
