@@ -1,4 +1,4 @@
-use crate::tree::PAGE_SIZE;
+use crate::tree::{PAGE_SIZE, overflow_page::read_overflow, storage::PagesStorage};
 use std::io;
 use crate::tree::storage::PageHandle;
 use std::mem::size_of;
@@ -70,6 +70,8 @@ pub struct LogEntryHeader {
 }
 
 impl LogEntryHeader {
+    pub const FIRST_OFFSET: u32 = LOG_HEADER_SIZE;
+
     /// Reads a log entry header at the given offset.
     /// Returns Ok(None) if the entry is not committed.
     pub fn read(page: &impl PageHandle, offset: u32) -> io::Result<Option<Self>> {
@@ -111,5 +113,32 @@ impl LogEntryHeader {
 
         Ok(())
     }
-}
 
+    pub fn next_offset(&self, self_offset: u32) -> u32 {
+        assert!(self_offset % 4 == 0);
+        let mut data_len_padded = self.data_length;
+        if data_len_padded % 4 != 0 {
+            data_len_padded += 4 - (data_len_padded % 4);
+        }
+
+        return self_offset + LOG_ENTRY_HEADER_SIZE + data_len_padded;
+    }
+
+    pub fn read_payload(&self, storage: &impl PagesStorage, page: &impl PageHandle, self_offset: u32) -> io::Result<Vec<u8>> {
+        assert!(self_offset % 4 == 0);
+
+        let data_offset = self_offset + LOG_ENTRY_HEADER_SIZE;
+        match self.storage_mode {
+            StorageMode::Inline => {
+                let mut buf = vec![0u8; self.data_length as usize];
+                page.read(data_offset, buf.as_mut_slice())?;
+                Ok(buf)
+            },
+            StorageMode::Overflow => {
+                assert_eq!(self.data_length, 4);
+                let first_overflow_pagenum = page.read_type::<u32>(data_offset)?;
+                read_overflow(storage, first_overflow_pagenum)
+            }
+        }
+    }
+}

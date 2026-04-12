@@ -9,7 +9,7 @@ use std::sync::{Mutex, RwLock};
 
 use crate::tree::branch_page::{BranchDirectoryHeader, BranchesInfo};
 use crate::tree::header_page::HeaderPage;
-use crate::tree::log_page::LogPageHeader;
+use crate::tree::log_page::{LogEntryHeader, LogPageHeader};
 use crate::tree::storage::PagesStorage;
 
 pub const PAGE_SIZE: u32 = 4096;
@@ -17,7 +17,7 @@ pub const PAGE_SIZE: u32 = 4096;
 pub struct OnDiskTree<S: PagesStorage> {
     storage: S,
     document_uuid: u128,
-    branch_dir_pages: RwLock<BranchesInfo>,
+    branches: BranchesInfo,
 }
 
 impl<S: PagesStorage> OnDiskTree<S> {
@@ -51,7 +51,7 @@ impl<S: PagesStorage> OnDiskTree<S> {
         Ok(Self {
             storage,
             document_uuid,
-            branch_dir_pages: RwLock::new(branches_info),
+            branches: RwLock::new(branches_info),
         })
     }
 
@@ -62,7 +62,58 @@ impl<S: PagesStorage> OnDiskTree<S> {
         Ok(Self {
             storage,
             document_uuid: header.document_uuid,
-            branch_dir_pages: RwLock::new(branch_info),
+            branches: RwLock::new(branch_info),
         })
+    }
+
+    pub fn read_range(
+        &self,
+        branch_num: u32,
+        start_seq: u64,
+        end_seq: u64,
+    ) -> io::Result<Vec<Vec<u8>>> {
+        // Find a page whose first element is less than the end num, so we've gone to far
+        let mut log_page = self.branches.branch_log_pagenum(branch_num)?;
+        let mut log_page_header = LogPageHeader::read(&self.storage.get_page(log_page)?)?;
+        while log_page_header.first_sequence_num > end_seq {
+            log_page = log_page_header.prev_branch_pagenum;
+            log_page_header = LogPageHeader::read(&self.storage.get_page(log_page)?)?;
+        }
+
+        let mut payloads_reverse: Vec<Vec<u8>> = vec![];
+
+        // On the current page, collect up until this sequence number
+        let mut go_until_seq = end_seq;
+
+        loop {
+            let offset = LogEntryHeader::FIRST_OFFSET;
+            let page = self.storage.get_page(log_page)?;
+            let mut page_payloads = vec![];
+
+            for seq in log_page_header.first_sequence_num..=go_until_seq {
+                let entry = LogEntryHeader::read(&page, offset)?.ok_or(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Unexpected end of log page",
+                ))?;
+
+                if seq >= start_seq {
+                    page_payloads.push(entry.read_payload(&self.storage, &page, offset)?);
+                }
+            }
+
+            // Add the payloads from this page to the combined vec
+            page_payloads.reverse();
+            payloads_reverse.extend(page_payloads);
+
+            if log_page_header.first_sequence_num <= start_seq {
+                break;
+            }
+            // Prepare for the next page
+            go_until_seq = log_page_header.first_sequence_num - 1;
+            log_page = log_page_header.prev_branch_pagenum;
+            log_page_header = LogPageHeader::read(&self.storage.get_page(log_page)?)?;
+        }
+
+        return Ok(vec![]);
     }
 }

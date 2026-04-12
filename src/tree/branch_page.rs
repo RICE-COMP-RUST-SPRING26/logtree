@@ -286,4 +286,10 @@ impl BranchesInfo {
 
         return Ok(());
     }
+
+    pub fn branch_log_pagenum(&self, branch_num: u32) -> io::Result<u32> {
+        let branch_info = self.branches.get(branch_num as usize)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Invalid branch number"))?;
+        Ok(branch_info.latest_log_pagenum.load(std::sync::atomic::Ordering::SeqCst))
+    }
 }
