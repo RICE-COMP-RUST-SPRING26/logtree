@@ -5,4 +5,4 @@ edition = "2024"
 
 [dependencies]
 fs4 = "0.13.1"
-zerocopy = "0.8.48"
+zerocopy = { version = "0.8", features = ["derive"] }

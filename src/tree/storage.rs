@@ -1,3 +1,4 @@
+use zerocopy::{KnownLayout, Immutable, TryFromBytes, IntoBytes};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::unix::fs::FileExt as UnixFileExt;
@@ -11,44 +12,16 @@ pub trait PageHandle {
     fn read(&self, offset: u32, buf: &mut [u8]) -> io::Result<()>;
     fn write(&self, offset: u32, buf: &[u8]) -> io::Result<()>;
 
-    fn read_u8(&self, offset: u32) -> io::Result<u8> {
-        let mut buf = [0u8; 1];
+    fn read_type<T: TryFromBytes + KnownLayout + Immutable + 'static>(&self, offset: u32) -> io::Result<T> {
+        let mut buf = vec![0u8; size_of::<T>()];
         self.read(offset, &mut buf)?;
-        Ok(buf[0])
+        let (val, _) = T::try_read_from_prefix(&buf)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid byte pattern"))?;
+        Ok(val)
     }
 
-    fn read_u32(&self, offset: u32) -> io::Result<u32> {
-        let mut buf = [0u8; 4];
-        self.read(offset, &mut buf)?;
-        Ok(u32::from_le_bytes(buf))
-    }
-
-    fn read_u64(&self, offset: u32) -> io::Result<u64> {
-        let mut buf = [0u8; 8];
-        self.read(offset, &mut buf)?;
-        Ok(u64::from_le_bytes(buf))
-    }
-
-    fn read_u128(&self, offset: u32) -> io::Result<u128> {
-        let mut buf = [0u8; 16];
-        self.read(offset, &mut buf)?;
-        Ok(u128::from_le_bytes(buf))
-    }
-
-    fn write_u8(&self, offset: u32, val: u8) -> io::Result<()> {
-        self.write(offset, &[val])
-    }
-
-    fn write_u32(&self, offset: u32, val: u32) -> io::Result<()> {
-        self.write(offset, &val.to_le_bytes())
-    }
-
-    fn write_u64(&self, offset: u32, val: u64) -> io::Result<()> {
-        self.write(offset, &val.to_le_bytes())
-    }
-
-    fn write_u128(&self, offset: u32, val: u128) -> io::Result<()> {
-        self.write(offset, &val.to_le_bytes())
+    fn write_type<T: IntoBytes + Immutable>(&self, offset: u32, val: &T) -> io::Result<()> {
+        self.write(offset, val.as_bytes())
     }
 }
 

@@ -1,10 +1,12 @@
-use crate::tree::storage::PageHandle;
 use std::io;
+use zerocopy::{FromBytes, IntoBytes, KnownLayout, Immutable};
+use crate::tree::storage::PageHandle;
 
 const MAGIC: u64 = 0x4F4E4449534B5452; // "ONDISKTR"
 const VERSION: u32 = 1;
 
-
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
 pub struct HeaderPage {
     pub magic: u64,
     pub version: u32,
@@ -23,30 +25,23 @@ impl HeaderPage {
     }
 
     pub fn read(page: &impl PageHandle) -> io::Result<Self> {
-        let magic = page.read_u64(0)?;
-        if magic != MAGIC {
+        let header: Self = page.read_type(0)?;
+
+        if header.magic != MAGIC {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid magic"));
         }
 
-        let version = page.read_u32(8)?;
-        if version != VERSION {
+        if header.version != VERSION {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("unsupported version: {}", version),
+                format!("unsupported version: {}", header.version),
             ));
         }
 
-        let branch_dir_pagenum = page.read_u32(12)?;
-        let document_uuid = page.read_u128(16)?;
-
-        Ok(Self { magic, version, branch_dir_pagenum, document_uuid })
+        Ok(header)
     }
 
     pub fn write(&self, page: &impl PageHandle) -> io::Result<()> {
-        page.write_u64(0, self.magic)?;
-        page.write_u32(8, self.version)?;
-        page.write_u32(12, self.branch_dir_pagenum)?;
-        page.write_u128(16, self.document_uuid)?;
-        Ok(())
+        page.write_type(0, self)
     }
 }
