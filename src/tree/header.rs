@@ -15,13 +15,15 @@ pub struct HeaderPage {
 }
 
 impl HeaderPage {
-    pub fn new(branch_dir_pagenum: u32, document_uuid: u128) -> Self {
-        Self {
+    pub fn write(page: &impl PageHandle, branch_dir_pagenum: u32, document_uuid: u128) -> io::Result<Self> {
+        let header = Self {
             magic: MAGIC,
             version: VERSION,
             branch_dir_pagenum,
             document_uuid,
-        }
+        };
+        page.write_type(0, &header)?;
+        return Ok(header);
     }
 
     pub fn read(page: &impl PageHandle) -> io::Result<Self> {
@@ -39,9 +41,5 @@ impl HeaderPage {
         }
 
         Ok(header)
-    }
-
-    pub fn write(&self, page: &impl PageHandle) -> io::Result<()> {
-        page.write_type(0, self)
     }
 }
