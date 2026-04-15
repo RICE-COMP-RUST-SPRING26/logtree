@@ -16,6 +16,7 @@ pub struct HeaderPage {
 
 impl HeaderPage {
     pub fn write(page: &impl PageHandle, branch_dir_pagenum: u32, document_uuid: u128) -> io::Result<Self> {
+        // TODO: validate branch_dir_pagenum > 0?
         let header = Self {
             magic: MAGIC,
             version: VERSION,
@@ -39,7 +40,9 @@ impl HeaderPage {
                 format!("unsupported version: {}", header.version),
             ));
         }
-
+        
+        // TODO: validate branch_dir_pagenum > 0?
+        // TODO: validate document_uuid?
         Ok(header)
     }
 }

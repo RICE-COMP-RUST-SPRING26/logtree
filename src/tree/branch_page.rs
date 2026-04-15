@@ -19,7 +19,7 @@ pub struct BranchDirectoryHeader {
     pub page_type: u8,
     pub next_page_committed: u8,
     pub _padding: [u8; 6],
-    pub next_pagenum: u64,
+    pub next_pagenum: u64, // TODO: u32?
 }
 
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Clone, Copy)]
@@ -36,6 +36,7 @@ pub struct BranchDirectoryEntry {
 
 impl BranchDirectoryHeader {
     pub fn read(page: &impl PageHandle) -> io::Result<Self> {
+        // TODO: validate page_type?
         page.read_type(0)
     }
 
@@ -56,9 +57,10 @@ impl BranchDirectoryHeader {
     ) -> io::Result<()> {
         // Write the pointer first
         page.write_type(8, &next_pagenum)?;
-        page.sync();
+        page.sync()?; // TODO: using storage.sync() in other places
         // Atomically mark as committed
         page.write_type(1, &1u8)?;
+        // TODO: sync commit
         Ok(())
     }
 }
@@ -96,9 +98,11 @@ impl BranchDirectoryEntry {
         };
 
         page.write_type(offset, &entry)?;
-        storage.sync();
+        storage.sync()?;
         // Atomically mark as committed
         page.write_type(offset, &1u8);
+        // TODO: sync commit
+
         Ok(())
     }
 
@@ -139,6 +143,8 @@ impl BranchDirectoryEntry {
         // Flip the selector to make the new slot active
         let selector_offset = base + offset_of!(BranchDirectoryEntry, active_latest_log_pagenum) as u32;
         page.write_type(selector_offset, &new_selector)?;
+        // TODO: sync the slots
+
         Ok(())
     }
 }

@@ -82,17 +82,19 @@ impl Drop for FilePagesStorage {
 
 impl PageHandle for FilePageHandle<'_> {
     fn sync(&self) -> io::Result<()> {
-        self.file.sync_data()
+        self.file.sync_data() // TODO: use sync_all() to flush data + metadata
     }
 
     fn read(&self, offset: u32, buf: &mut [u8]) -> io::Result<()> {
         let abs_offset = self.index as u64 * self.page_size as u64 + offset as u64;
         self.file.read_exact_at(buf, abs_offset)
+        // TODO: add validation to ensure reading within page boundaries
     }
 
     fn write(&self, offset: u32, buf: &[u8]) -> io::Result<()> {
         let abs_offset = self.index as u64 * self.page_size as u64 + offset as u64;
         self.file.write_all_at(buf, abs_offset)
+        // TODO: add validation to ensure writing within page boundaries
     }
 }
 
@@ -100,6 +102,7 @@ impl PagesStorage for FilePagesStorage {
     type Page<'a> = FilePageHandle<'a>;
 
     fn get_page(&self, index: u32) -> io::Result<Self::Page<'_>> {
+        // TODO: validate that index <= page count
         Ok(FilePageHandle {
             file: &self.file,
             page_size: self.page_size,
@@ -120,6 +123,7 @@ impl PagesStorage for FilePagesStorage {
     }
 
     fn sync(&self) -> io::Result<()> {
-        self.file.sync_data()
+        // TODO: use sync_all() to flush data + metadata ow length may be out of sync
+        self.file.sync_data() 
     }
 }

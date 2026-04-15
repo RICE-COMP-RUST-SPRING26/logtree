@@ -21,6 +21,7 @@ pub struct OverflowHeader {
 impl OverflowHeader {
     pub fn read(page: &impl PageHandle) -> io::Result<Self> {
         page.read_type(0)
+        // TODO: validate type?
     }
 
     pub fn write(page: &impl PageHandle, total_length: u64) -> io::Result<()> {

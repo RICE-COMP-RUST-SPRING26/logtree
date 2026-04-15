@@ -52,6 +52,7 @@ impl<S: PagesStorage> OnDiskTree<S> {
 
         storage.sync()?;
 
+        // TODO: what is branch_mutexes doing?
         let branch_mutexes = boxcar::Vec::new();
         branch_mutexes.push(Mutex::new(()));
 
@@ -78,7 +79,8 @@ impl<S: PagesStorage> OnDiskTree<S> {
         let mut pagenum = self.branches.branch_log_pagenum(branch_num)?;
         let mut header = LogPageHeader::read(&self.storage.get_page(pagenum)?)?;
 
-        while header.first_sequence_num > seq {
+        // TODO: potential infinite loop if first_sequence_num is corrupted s.t. seq always < header.first_sequence_num
+        while header.first_sequence_num > seq { 
             pagenum = header.prev_branch_pagenum;
             header = LogPageHeader::read(&self.storage.get_page(pagenum)?)?;
         }
@@ -165,7 +167,7 @@ impl<S: PagesStorage> OnDiskTree<S> {
         let do_overflow = payload.len() > Self::MAX_INLINE_BYTES;
 
         let overflow_page_buffer: [u8; 4];
-        let data: &[u8] = if do_overflow {
+        let data: &[u8] = if do_overflow { // TODO: alt approaches? potential bottleneck
             let overflow_page = write_overflow(&self.storage, payload)?;
             overflow_page_buffer = overflow_page.to_le_bytes();
             &overflow_page_buffer.as_slice()

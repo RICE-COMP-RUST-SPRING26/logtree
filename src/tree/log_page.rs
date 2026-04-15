@@ -30,6 +30,7 @@ impl LogPageHeader {
     /// Reads the log page header from the given page.
     pub fn read(page: &impl PageHandle) -> io::Result<Self> {
         page.read_type(0)
+        // TODO: validate page_type?
     }
 
     /// Creates a new log page by writing a fresh header.
@@ -95,6 +96,7 @@ impl LogEntryHeader {
         is_overflow: bool,
         data: &[u8],
     ) -> io::Result<Self> {
+        // TODO: use \leq?
         assert!(offset + LOG_ENTRY_HEADER_SIZE + (data.len() as u32) < PAGE_SIZE);
 
         let header = Self {
@@ -108,6 +110,8 @@ impl LogEntryHeader {
         // Write the data at the end
         let data_offset = offset + LOG_ENTRY_HEADER_SIZE;
         page.write(data_offset, data)?;
+        
+        // TODO: missing sync
 
         // Atomically mark as committed
         page.write_type(offset, &1u8)?;
