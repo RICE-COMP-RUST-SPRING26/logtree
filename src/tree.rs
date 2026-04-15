@@ -11,6 +11,7 @@ mod tests;
 pub use print::print_tree;
 pub use storage::FilePagesStorage;
 
+use std::fmt;
 use std::io;
 use std::sync::Mutex;
 
@@ -108,6 +109,7 @@ impl<S: PagesStorage> OnDiskTree<S> {
         start_seq: u64,
         end_seq: u64,
     ) -> Result<Vec<Vec<u8>>, TreeError> {
+        // TODO: put assertion that start_seq > 0!!!!!
         // Find a page whose first element is less than the end num, so we've gone to far
         let (mut log_pagenum, mut log_header) = self.find_node_page(branch_num, end_seq)?;
 
@@ -217,5 +219,13 @@ impl From<io::Error> for TreeError {
         TreeError::IoError(err)
     }
 }
+
+impl fmt::Display for TreeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for TreeError {}
 
 pub type TreeResult<T> = Result<T, TreeError>;

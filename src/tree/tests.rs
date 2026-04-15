@@ -5,6 +5,9 @@ use crate::tree::overflow_page::{OverflowHeader, OVERFLOW_PAYLOAD_PER_PAGE};
 use crate::tree::storage::{PageHandle, PagesStorage};
 use crate::tree::*;
 use std::path::Path;
+use std::collections::HashSet;
+use std::sync::{Arc, Barrier};
+use std::thread;
 
 fn temp_path(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join("ondisktree_tests");
@@ -432,4 +435,92 @@ fn test_append_to_invalid_branch() {
     assert!(BranchDirectoryEntry::read(&bd_page, 1).unwrap().is_none());
 
     cleanup(&path);
+}
+
+
+#[test]
+fn concurrent_append_same_branch_strong() -> Result<(), Box<dyn std::error::Error>> {
+    let path = temp_path("concurrent_append_strong.db");
+    cleanup(&path);
+
+    let storage = FilePagesStorage::open(&path, PAGE_SIZE)?;
+    let tree = Arc::new(OnDiskTree::create(storage, 42)?);
+
+    let num_threads = 8;
+    let per_thread = 100;
+
+    // Barrier ensures all threads start at the same time,
+    // maximizing contention and exposing race conditions.
+    let barrier = Arc::new(Barrier::new(num_threads));
+
+    let mut handles = Vec::with_capacity(num_threads);
+
+    for t in 0..num_threads {
+        let tree = Arc::clone(&tree);
+        let barrier = Arc::clone(&barrier);
+
+        handles.push(thread::spawn(move || -> Result<(), String> {
+            // Synchronize start
+            barrier.wait();
+
+            for i in 0..per_thread {
+                // Unique payload per write:
+                // ensures we can detect duplicates or overwrites
+                let payload = format!("thread:{}-write:{}", t, i).into_bytes();
+
+                tree.append_to_branch(0, &payload)
+                    .map_err(|e| format!("thread {} failed at i={}: {:?}", t, i, e))?;
+            }
+
+            Ok(())
+        }));
+    }
+
+    for (idx, handle) in handles.into_iter().enumerate() {
+        let res = handle.join().map_err(|_| format!("thread {} panicked", idx))?;
+        res.map_err(|e| format!("thread {} error: {}", idx, e))?;
+    }
+
+    let total_writes = num_threads * per_thread;
+
+    let results = tree.read_range(
+        0,
+        1, // sequence numbers are 1-based
+        total_writes as u64,
+    )?;
+
+
+    // 1. No lost writes
+    assert_eq!(
+        results.len(),
+        total_writes,
+        "missing entries: expected {}, got {}",
+        total_writes,
+        results.len()
+    );
+
+    // 2. No duplicates / overwrites
+    let unique: HashSet<_> = results.iter().cloned().collect();
+    assert_eq!(
+        unique.len(),
+        total_writes,
+        "duplicate or overwritten entries detected"
+    );
+
+    // 3. Integrity: every expected payload exists
+    for t in 0..num_threads {
+        for i in 0..per_thread {
+            let expected = format!("thread:{}-write:{}", t, i).into_bytes();
+
+            assert!(
+                unique.contains(&expected),
+                "missing payload: {:?}",
+                expected
+            );
+        }
+    }
+
+    cleanup(&path);
+
+    Ok(())
 }
