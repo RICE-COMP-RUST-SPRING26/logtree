@@ -524,3 +524,222 @@ fn concurrent_append_same_branch_strong() -> Result<(), Box<dyn std::error::Erro
 
     Ok(())
 }
+
+#[test]
+fn concurrent_append_and_reads() -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    let path = temp_path("concurrent_append_reads.db");
+    cleanup(&path);
+
+    let storage = FilePagesStorage::open(&path, PAGE_SIZE)?;
+    let tree = Arc::new(OnDiskTree::create(storage, 100)?);
+
+    let num_threads = 6;
+    let per_thread = 100;
+
+    let barrier = Arc::new(Barrier::new(num_threads + 1)); // +1 reader
+
+    // ---------------- Writers ----------------
+    let mut handles = vec![];
+
+    for t in 0..num_threads {
+        let tree = Arc::clone(&tree);
+        let barrier = Arc::clone(&barrier);
+
+        handles.push(thread::spawn(move || -> Result<(), String> {
+            barrier.wait();
+
+            for i in 0..per_thread {
+                let payload = format!("W{}-{}", t, i).into_bytes();
+                tree.append_to_branch(0, &payload)
+                    .map_err(|e| format!("writer {} failed at {}: {:?}", t, i, e))?;
+            }
+
+            Ok(())
+        }));
+    }
+
+    // ---------------- Reader ----------------
+    let reader = {
+        let tree = Arc::clone(&tree);
+        let barrier = Arc::clone(&barrier);
+
+        thread::spawn(move || -> Result<(), String> {
+            barrier.wait();
+
+            for _ in 0..200 {
+                let _ = tree.read_range(0, 1, 1000);
+            }
+
+            Ok(())
+        })
+    };
+
+    // ---------------- Join ----------------
+    for (i, h) in handles.into_iter().enumerate() {
+        let r = h.join().map_err(|_| format!("writer {} panicked", i))?;
+        r.map_err(|e| format!("writer {} error: {}", i, e))?;
+    }
+
+    reader.join().map_err(|_| "reader panicked")??;
+
+    // ---------------- Validate ----------------
+    let total = num_threads * per_thread;
+    let results = tree.read_range(0, 1, total as u64)?;
+
+    assert_eq!(results.len(), total);
+
+    cleanup(&path);
+    Ok(())
+}
+
+
+#[test]
+fn concurrent_branch_creation() -> Result<(), Box<dyn std::error::Error>> {
+    use std::collections::HashSet;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    let path = temp_path("concurrent_branch_create.db");
+    cleanup(&path);
+
+    let storage = FilePagesStorage::open(&path, PAGE_SIZE)?;
+    let tree = Arc::new(OnDiskTree::create(storage, 200)?);
+
+    let num_threads = 10;
+    let barrier = Arc::new(Barrier::new(num_threads));
+
+    let mut handles = vec![];
+
+    for _ in 0..num_threads {
+        let tree = Arc::clone(&tree);
+        let barrier = Arc::clone(&barrier);
+
+        handles.push(thread::spawn(move || -> Result<u32, String> {
+            barrier.wait();
+            tree.add_branch(0, 1)
+                .map_err(|e| format!("branch creation failed: {:?}", e))
+        }));
+    }
+
+    let mut ids = vec![];
+
+    for (i, h) in handles.into_iter().enumerate() {
+        let id = h.join().map_err(|_| format!("thread {} panicked", i))??;
+        ids.push(id);
+    }
+
+    let set: HashSet<_> = ids.iter().cloned().collect();
+    assert_eq!(set.len(), num_threads);
+
+    cleanup(&path);
+    Ok(())
+}
+
+
+#[test]
+fn append_while_creating_branches() -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    let path = temp_path("append_while_branching.db");
+    cleanup(&path);
+
+    let storage = FilePagesStorage::open(&path, PAGE_SIZE)?;
+    let tree = Arc::new(OnDiskTree::create(storage, 300)?);
+
+    let barrier = Arc::new(Barrier::new(2));
+
+    // Writer thread
+    let writer = {
+        let tree = Arc::clone(&tree);
+        let barrier = Arc::clone(&barrier);
+
+        thread::spawn(move || -> Result<(), String> {
+            barrier.wait();
+            for i in 0..200 {
+                let payload = format!("main-{}", i).into_bytes();
+                tree.append_to_branch(0, &payload)
+                    .map_err(|e| format!("append failed: {:?}", e))?;
+            }
+            Ok(())
+        })
+    };
+
+    // Branch creator thread
+    let creator = {
+        let tree = Arc::clone(&tree);
+        let barrier = Arc::clone(&barrier);
+
+        thread::spawn(move || -> Result<(), String> {
+            barrier.wait();
+            for _ in 0..50 {
+                let _ = tree.add_branch(0, 1);
+            }
+            Ok(())
+        })
+    };
+
+    writer.join().map_err(|_| "writer panicked")??;
+    creator.join().map_err(|_| "creator panicked")??;
+
+    let results = tree.read_range(0, 1, 200)?;
+    assert_eq!(results.len(), 200);
+
+    cleanup(&path);
+    Ok(())
+}
+
+
+#[test]
+fn concurrent_overflow_writes() -> Result<(), Box<dyn std::error::Error>> {
+    use std::collections::HashSet;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    let path = temp_path("concurrent_overflow.db");
+    cleanup(&path);
+
+    let storage = FilePagesStorage::open(&path, PAGE_SIZE)?;
+    let tree = Arc::new(OnDiskTree::create(storage, 400)?);
+
+    let num_threads = 6;
+    let payload_size = 5000; // forces overflow
+    let barrier = Arc::new(Barrier::new(num_threads));
+
+    let mut handles = vec![];
+
+    for t in 0..num_threads {
+        let tree = Arc::clone(&tree);
+        let barrier = Arc::clone(&barrier);
+
+        handles.push(thread::spawn(move || -> Result<(), String> {
+            let payload = vec![t as u8; payload_size];
+
+            barrier.wait();
+
+            tree.append_to_branch(0, &payload)
+                .map_err(|e| format!("overflow write failed: {:?}", e))?;
+
+            Ok(())
+        }));
+    }
+
+    for (i, h) in handles.into_iter().enumerate() {
+        let r = h.join().map_err(|_| format!("thread {} panicked", i))?;
+        r.map_err(|e| format!("thread {} error: {}", i, e))?;
+    }
+
+    let results = tree.read_range(0, 1, num_threads as u64)?;
+
+    assert_eq!(results.len(), num_threads);
+
+    // Ensure payload integrity
+    let set: HashSet<_> = results.iter().cloned().collect();
+    assert_eq!(set.len(), num_threads);
+
+    cleanup(&path);
+    Ok(())
+}
