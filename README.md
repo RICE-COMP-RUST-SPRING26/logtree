@@ -106,6 +106,7 @@ We store the tree on-disk in a WAL consisting of node and branch creation record
 
 ## Records
 
+```text
 BranchCreateRecord
 [1] type
 [4] record_length
@@ -122,7 +123,7 @@ NodeCreateRecord
 [8] prev_node_id (0 if root node)
 [4] payload_length
 [-] payload
-
+```
 
 ## Concurrency Patterns
 
