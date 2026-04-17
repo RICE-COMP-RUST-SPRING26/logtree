@@ -4,6 +4,11 @@ use std::fmt;
 use std::io;
 
 
+mod record;
+mod wal;
+
+
+
 
 // ==================== Error type ====================
 
