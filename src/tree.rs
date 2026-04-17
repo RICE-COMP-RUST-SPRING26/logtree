@@ -7,6 +7,7 @@ use std::io;
 mod record;
 mod wal;
 mod state;
+mod recovery;
 
 
 
