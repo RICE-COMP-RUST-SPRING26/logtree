@@ -1,9 +1,9 @@
 #![allow(warnings)]
 
-mod tree;
 mod cli;
+mod tree;
 
 
-fn main() -> std::io::Result<()> {
-    cli::run_cli()
+fn main()  {
+    // cli::run_cli()
 }
