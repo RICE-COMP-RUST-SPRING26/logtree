@@ -4,6 +4,6 @@ mod cli;
 mod tree;
 
 
-fn main()  {
-    // cli::run_cli()
+fn main() -> std::io::Result<()> {
+    cli::run_cli()
 }

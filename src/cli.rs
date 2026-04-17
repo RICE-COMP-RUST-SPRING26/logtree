@@ -1,125 +1,148 @@
-// use std::io;
-// use std::path::Path;
+use std::io;
+use std::path::Path;
 
-// use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand};
 
+use crate::tree::Tree;
 
+type NodeId = u64;
+type BranchId = u64;
+#[derive(Parser)]
+#[command(name = "wal_tree")]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Command,
+}
 
-// #[derive(Parser)]
-// #[command(name = "ondisktree")]
-// pub struct Cli {
-//     #[command(subcommand)]
-//     pub command: Command,
-// }
+#[derive(Subcommand)]
+pub enum Command {
+    /// Create a new tree
+    Create {
+        file: String,
+        #[arg(long)]
+        uuid: Option<String>,
+    },
 
-// #[derive(Subcommand)]
-// pub enum Command {
-//     /// Create a new tree file
-//     Create {
-//         file: String,
-//         #[arg(long)]
-//         uuid: Option<String>,
-//     },
-//     /// Print the full tree structure
-//     Print { file: String },
-//     /// Append data to a branch
-//     Append {
-//         file: String,
-//         #[arg(long, default_value_t = 0)]
-//         branch: u32,
-//         #[arg(long)]
-//         data: String,
-//     },
-//     /// Read a range of entries from a branch
-//     Read {
-//         file: String,
-//         #[arg(long, default_value_t = 0)]
-//         branch: u32,
-//         #[arg(long)]
-//         start: u64,
-//         #[arg(long)]
-//         end: u64,
-//     },
-//     /// Create a new branch forking from a parent
-//     AddBranch {
-//         file: String,
-//         #[arg(long)]
-//         parent_branch: u32,
-//         #[arg(long)]
-//         parent_seq: u64,
-//     },
-// }
+    /// Append payload to a branch
+    Append {
+        file: String,
+        #[arg(long, default_value_t = 0)]
+        branch: BranchId,
+        #[arg(long)]
+        data: String,
+    },
 
-// pub fn run_cli() -> io::Result<()> {
-//     let cli = Cli::parse();
+    /// Create a new branch from a parent node
+    Branch {
+        file: String,
+        #[arg(long)]
+        parent: NodeId,
+    },
 
-//     match cli.command {
-//         Command::Create { file, uuid } => {
-//             let storage = FilePagesStorage::open(Path::new(&file), PAGE_SIZE)?;
-//             let uuid = uuid
-//                 .map(|s| u128::from_str_radix(&s, 16).expect("invalid hex uuid"))
-//                 .unwrap_or_else(|| rand::random());
-//             OnDiskTree::create(storage, uuid)?;
-//             println!("created tree: {}", file);
-//         }
-//         Command::Print { file } => {
-//             let storage = FilePagesStorage::open(Path::new(&file), PAGE_SIZE)?;
-//             print_tree(&storage)?;
-//         }
-//         Command::Append { file, branch, data } => {
-//             let storage = FilePagesStorage::open(Path::new(&file), PAGE_SIZE)?;
-//             let tree = OnDiskTree::open(storage)?;
-//             let seq = tree
-//                 .append_to_branch(branch, data.as_bytes())
-//                 .map_err(|e| match e {
-//                     crate::tree::TreeError::IoError(io) => io,
-//                     crate::tree::TreeError::BranchNotFound => {
-//                         io::Error::new(io::ErrorKind::NotFound, "branch not found")
-//                     }
-//                 })?;
-//             println!("appended at seq {}", seq);
-//         }
-//         Command::Read {
-//             file,
-//             branch,
-//             start,
-//             end,
-//         } => {
-//             let storage = FilePagesStorage::open(Path::new(&file), PAGE_SIZE)?;
-//             let tree = OnDiskTree::open(storage)?;
-//             let payloads = tree.read_range(branch, start, end).map_err(|e| match e {
-//                 crate::tree::TreeError::IoError(io) => io,
-//                 crate::tree::TreeError::BranchNotFound => {
-//                     io::Error::new(io::ErrorKind::NotFound, "branch not found")
-//                 }
-//             })?;
-//             println!("{}", payloads.len());
-//             for (i, payload) in payloads.iter().enumerate() {
-//                 let seq = start + i as u64;
-//                 match std::str::from_utf8(payload) {
-//                     Ok(s) => println!("[{}] {}", seq, s),
-//                     Err(_) => println!("[{}] ({} bytes) {:?}", seq, payload.len(), payload),
-//                 }
-//             }
-//         }
-//         Command::AddBranch {
-//             file,
-//             parent_branch,
-//             parent_seq,
-//         } => {
-//             let storage = FilePagesStorage::open(Path::new(&file), PAGE_SIZE)?;
-//             let tree = OnDiskTree::open(storage)?;
-//             let branch_num = tree
-//                 .add_branch(parent_branch, parent_seq)
-//                 .map_err(|e| match e {
-//                     crate::tree::TreeError::IoError(io) => io,
-//                     crate::tree::TreeError::BranchNotFound => {
-//                         io::Error::new(io::ErrorKind::NotFound, "branch not found")
-//                     }
-//                 })?;
-//             println!("created branch {}", branch_num);
-//         }
-//     }
+    /// Read nodes in range [head → tail]
+    Read {
+        file: String,
+        #[arg(long)]
+        head: NodeId,
+        #[arg(long)]
+        tail: NodeId,
+    },
 
-//     Ok(())
-// }
+    
+}
+
+pub fn run_cli() -> io::Result<()> {
+    let cli = Cli::parse();
+
+    match cli.command {
+        // ------------------------------------------------------------
+        // CREATE
+        // ------------------------------------------------------------
+        Command::Create { file, uuid } => {
+            let uuid = uuid
+                .map(|s| u128::from_str_radix(&s, 16).expect("invalid hex uuid"))
+                .unwrap_or_else(|| rand::random());
+
+            Tree::create_tree(Path::new(&file), uuid)
+                .map_err(map_tree_err)?;
+
+            println!("created tree: {}", file);
+        }
+
+        // ------------------------------------------------------------
+        // APPEND
+        // ------------------------------------------------------------
+        Command::Append { file, branch, data } => {
+            let tree = Tree::open_tree(Path::new(&file), 0)
+                .map_err(map_tree_err)?;
+
+            let node_id = tree
+                .append_to_branch(branch, data.into_bytes())
+                .map_err(map_tree_err)?;
+
+            println!("appended node_id={}", node_id);
+        }
+
+        // ------------------------------------------------------------
+        // BRANCH
+        // ------------------------------------------------------------
+        Command::Branch { file, parent } => {
+            let tree = Tree::open_tree(Path::new(&file), 0)
+                .map_err(map_tree_err)?;
+
+            let branch_id = tree
+                .create_branch_from_parent_node(parent)
+                .map_err(map_tree_err)?;
+
+            println!("created branch_id={}", branch_id);
+        }
+
+        // ------------------------------------------------------------
+        // READ
+        // ------------------------------------------------------------
+        Command::Read { file, head, tail } => {
+            let tree = Tree::open_tree(Path::new(&file), 0)
+                .map_err(map_tree_err)?;
+
+            let payloads = tree
+                .get_nodes_in_range(head, tail)
+                .map_err(map_tree_err)?;
+
+            println!("{} entries:", payloads.len());
+
+            for (i, payload) in payloads.iter().enumerate() {
+                match std::str::from_utf8(payload) {
+                    Ok(s) => println!("[{}] {}", i, s),
+                    Err(_) => println!("[{}] ({} bytes) {:?}", i, payload.len(), payload),
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ------------------------------------------------------------
+// Error mapping
+// ------------------------------------------------------------
+
+fn map_tree_err(err: crate::tree::TreeError) -> io::Error {
+    match err {
+        crate::tree::TreeError::Wal(e) => {
+            io::Error::new(io::ErrorKind::Other, format!("WAL error: {:?}", e))
+        }
+        crate::tree::TreeError::State(e) => {
+            io::Error::new(io::ErrorKind::Other, format!("State error: {:?}", e))
+        }
+        crate::tree::TreeError::Recovery(e) => {
+            io::Error::new(io::ErrorKind::Other, format!("Recovery error: {:?}", e))
+        }
+        crate::tree::TreeError::InvalidRange => {
+            io::Error::new(io::ErrorKind::InvalidInput, "invalid range")
+        }
+        crate::tree::TreeError::Record(_) => {
+            io::Error::new(io::ErrorKind::InvalidInput, "invalid range")
+        }
+    }
+}
+
