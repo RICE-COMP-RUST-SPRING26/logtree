@@ -168,7 +168,7 @@ impl Tree {
 
             let (payload, prev) = match record {
                 Record::Node(n) => (n.payload, n.prev_node_id),
-                _ => return Err(TreeError::InvalidRange),
+                Record::BranchCreate(_) => return Err(TreeError::InvalidRange),
             };
 
             payloads.push(payload);
@@ -189,3 +189,219 @@ impl Tree {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn temp_path(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!("tree_test_{}_{}", name, std::process::id()));
+        let _ = fs::remove_file(&path);
+        path
+    }
+
+    // ------------------------------------------------------------
+    // TEST 1: create_tree initializes root branch
+    //
+    // Verifies:
+    // - branch 0 exists
+    // - tail is 0
+    // ------------------------------------------------------------
+    #[test]
+    fn test_create_tree() {
+        let path = temp_path("create");
+        let tree = Tree::create_tree(&path, 123).unwrap();
+
+        let tail = tree.state.get_tail_node(0).unwrap();
+        assert_eq!(tail, 0);
+    }
+
+    // ------------------------------------------------------------
+    // TEST 2: append_to_branch basic functionality
+    //
+    // Verifies:
+    // - node is appended
+    // - tail updates
+    // ------------------------------------------------------------
+    #[test]
+    fn test_append_to_branch() {
+        let path = temp_path("append");
+        let tree = Tree::create_tree(&path, 1).unwrap();
+
+        let node_id = tree.append_to_branch(0, b"hello".to_vec()).unwrap();
+
+        let tail = tree.state.get_tail_node(0).unwrap();
+        assert_eq!(tail, node_id);
+    }
+
+    // ------------------------------------------------------------
+    // TEST 3: multiple appends maintain chain
+    //
+    // Verifies:
+    // - multiple appends form correct linked structure
+    // ------------------------------------------------------------
+    #[test]
+    fn test_multiple_appends() {
+        let path = temp_path("multi_append");
+        let tree = Tree::create_tree(&path, 1).unwrap();
+
+        let n1 = tree.append_to_branch(0, b"a".to_vec()).unwrap();
+        let n2 = tree.append_to_branch(0, b"b".to_vec()).unwrap();
+        let n3 = tree.append_to_branch(0, b"c".to_vec()).unwrap();
+
+        let res = tree.get_nodes_in_range(n1, n3).unwrap();
+
+        assert_eq!(res, vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
+    }
+
+    // ------------------------------------------------------------
+    // TEST 4: create_branch_from_parent_node
+    //
+    // Verifies:
+    // - new branch starts at parent node
+    // ------------------------------------------------------------
+    #[test]
+    fn test_branch_creation() {
+        let path = temp_path("branch");
+        let tree = Tree::create_tree(&path, 1).unwrap();
+
+        let n1 = tree.append_to_branch(0, b"a".to_vec()).unwrap();
+
+        let new_branch = tree.create_branch_from_parent_node(n1).unwrap();
+
+        let tail = tree.state.get_tail_node(new_branch).unwrap();
+        assert_eq!(tail, n1);
+    }
+
+    // ------------------------------------------------------------
+    // TEST 5: branches are independent
+    //
+    // Verifies:
+    // - appending to one branch does not affect another
+    // ------------------------------------------------------------
+    #[test]
+    fn test_branch_independence() {
+        let path = temp_path("branch_independent");
+        let tree = Tree::create_tree(&path, 1).unwrap();
+
+        let n1 = tree.append_to_branch(0, b"a".to_vec()).unwrap();
+        let b2 = tree.create_branch_from_parent_node(n1).unwrap();
+
+        let n2 = tree.append_to_branch(0, b"b".to_vec()).unwrap();
+        let n3 = tree.append_to_branch(b2, b"x".to_vec()).unwrap();
+
+        let tail_main = tree.state.get_tail_node(0).unwrap();
+        let tail_branch = tree.state.get_tail_node(b2).unwrap();
+
+        assert_eq!(tail_main, n2);
+        assert_eq!(tail_branch, n3);
+    }
+
+    // ------------------------------------------------------------
+    // TEST 6: invalid branch append fails
+    //
+    // Verifies:
+    // - appending to non-existent branch errors
+    // ------------------------------------------------------------
+    #[test]
+    fn test_append_invalid_branch() {
+        let path = temp_path("invalid_branch");
+        let tree = Tree::create_tree(&path, 1).unwrap();
+
+        let res = tree.append_to_branch(999, b"oops".to_vec());
+
+        assert!(res.is_err());
+    }
+
+    // ------------------------------------------------------------
+    // TEST 7: invalid range query
+    //
+    // Verifies:
+    // - querying non-existent nodes fails
+    // ------------------------------------------------------------
+    #[test]
+    fn test_invalid_range() {
+        let path = temp_path("invalid_range");
+        let tree = Tree::create_tree(&path, 1).unwrap();
+
+        let res = tree.get_nodes_in_range(1, 2);
+        assert!(res.is_err());
+    }
+
+    // ------------------------------------------------------------
+    // TEST 8: range not ancestor fails
+    //
+    // Verifies:
+    // - head must be ancestor of tail
+    // ------------------------------------------------------------
+    #[test]
+    fn test_non_ancestor_range() {
+        let path = temp_path("non_ancestor");
+        let tree = Tree::create_tree(&path, 1).unwrap();
+
+        let n1 = tree.append_to_branch(0, b"a".to_vec()).unwrap();
+        let n2 = tree.append_to_branch(0, b"b".to_vec()).unwrap();
+
+        let b2 = tree.create_branch_from_parent_node(n1).unwrap();
+        let n3 = tree.append_to_branch(b2, b"x".to_vec()).unwrap();
+
+        // n2 is not ancestor of n3
+        let res = tree.get_nodes_in_range(n2, n3);
+
+        assert!(res.is_err());
+    }
+
+    // ------------------------------------------------------------
+    // TEST 9: recovery end-to-end
+    //
+    // Verifies:
+    // - state is reconstructed after reopening
+    // ------------------------------------------------------------
+    #[test]
+    fn test_recovery_end_to_end() {
+        let path = temp_path("recovery");
+
+        {
+            let tree = Tree::create_tree(&path, 1).unwrap();
+
+            tree.append_to_branch(0, b"a".to_vec()).unwrap();
+            tree.append_to_branch(0, b"b".to_vec()).unwrap();
+        }
+
+        // reopen
+        let tree = Tree::open_tree(&path, 1).unwrap();
+
+        let res = tree.get_nodes_in_range(1, 2).unwrap();
+        assert_eq!(res, vec![b"a".to_vec(), b"b".to_vec()]);
+    }
+
+    // ------------------------------------------------------------
+    // TEST 10: branching + recovery together
+    //
+    // Verifies:
+    // - branches persist across recovery
+    // ------------------------------------------------------------
+    #[test]
+    fn test_branch_recovery() {
+        let path = temp_path("branch_recovery");
+
+        let branch_id;
+
+        {
+            let tree = Tree::create_tree(&path, 1).unwrap();
+
+            let n1 = tree.append_to_branch(0, b"a".to_vec()).unwrap();
+            branch_id = tree.create_branch_from_parent_node(n1).unwrap();
+
+            tree.append_to_branch(branch_id, b"x".to_vec()).unwrap();
+        }
+
+        let tree = Tree::open_tree(&path, 1).unwrap();
+
+        let tail = tree.state.get_tail_node(branch_id).unwrap();
+        assert_eq!(tail, 2); // node_id after append
+    }
+}
