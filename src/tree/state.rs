@@ -14,7 +14,7 @@ pub enum StateError {
 }
 
 pub struct BranchInfo {
-    tail_node_id: Mutex<NodeId>,
+    pub tail_node_id: Mutex<NodeId>,
 }
 
 impl BranchInfo {
@@ -69,7 +69,7 @@ impl NodeIndex {
 
 
 pub struct BranchIndex {
-    branch_index: RwLock<HashMap<BranchId, Arc<BranchInfo>>>
+    pub branch_index: RwLock<HashMap<BranchId, Arc<BranchInfo>>>
 }
 
 impl BranchIndex {
