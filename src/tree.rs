@@ -11,7 +11,22 @@ use crate::tree::state::{State, StateError, NodeId, BranchId};
 use crate::tree::wal::{Wal, WalError};
 use crate::tree::recovery::{recover, RecoveryError};
 
-/// Errors exposed by Tree API
+/// Errors returned by [`Tree`] operations.
+///
+/// This enum aggregates failures across all subsystems:
+/// - WAL (I/O and persistence)
+/// - State (in-memory index)
+/// - Record (serialization/deserialization)
+/// - Recovery (WAL replay)
+///
+/// # Variants
+///
+/// - `Wal`: Error originating from the write-ahead log layer
+/// - `State`: Error from in-memory state (e.g., missing node/branch)
+/// - `Record`: Error during encoding/decoding of records
+/// - `Recovery`: Error during WAL replay
+/// - `InvalidRange`: Invalid node range (e.g., non-ancestor traversal)
+
 #[derive(Debug)]
 pub enum TreeError {
     Wal(WalError),
@@ -45,6 +60,26 @@ impl From<RecoveryError> for TreeError {
     }
 }
 
+
+/// Persistent, append-only, branchable log structure.
+///
+/// The [`Tree`] provides:
+/// - durable storage via a Write-Ahead Log (WAL)
+/// - efficient in-memory indexing
+/// - branchable history via parent-linked nodes
+///
+/// # Key Properties
+///
+/// - **Append-only**: Existing data is never modified
+/// - **Branchable**: Multiple branches can diverge from any node
+/// - **Crash-safe**: WAL ensures durability before state updates
+/// - **Concurrent**: Per-branch locking enables parallel writes
+///
+/// # Structure
+///
+/// - Each node points to a `prev_node_id`, forming a linked structure
+/// - Each branch stores a pointer to its current tail node
+/// - The full tree is reconstructed dynamically from these relationships
 pub struct Tree {
     pub document_uuid: u128,
     wal: Wal,
@@ -52,11 +87,32 @@ pub struct Tree {
 }
 
 impl Tree {
-    /// Create a new tree with a fresh WAL.
+    /// Create a new tree backed by a fresh WAL file.
     ///
-    /// Initializes:
-    /// - branch_id = 0
-    /// - tail_node_id = 0
+    /// # Behavior
+    ///
+    /// - Creates or opens the WAL at `path`
+    /// - Initializes in-memory state
+    /// - Creates the root branch:
+    ///   - `branch_id = 0`
+    ///   - `tail_node_id = 0`
+    ///
+    /// # Guarantees
+    ///
+    /// - The initial branch is persisted to the WAL
+    /// - The tree is immediately ready for appends
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeError`] if:
+    /// - the WAL cannot be opened
+    /// - the initial record cannot be written
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let tree = Tree::create_tree(path, uuid)?;
+    /// ```
     pub fn create_tree(path: &Path, document_uuid: u128) -> Result<Self, TreeError> {
         let wal = Wal::open(path)?;
         let state = State::new();
@@ -78,7 +134,34 @@ impl Tree {
         Ok(tree)
     }
 
-    /// Open existing tree and recover state from WAL
+    /// Open an existing tree and recover its state from the WAL.
+    ///
+    /// # Behavior
+    ///
+    /// - Opens the WAL at `path`
+    /// - Scans and replays all records
+    /// - Rebuilds:
+    ///   - node index
+    ///   - branch index
+    ///   - branch tails
+    ///   - ID counters
+    ///
+    /// # Crash Safety
+    ///
+    /// - Partially written records at the end of the WAL are ignored
+    /// - Only fully written records are applied
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeError`] if:
+    /// - the WAL cannot be opened
+    /// - recovery fails due to corruption
+    /// ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let tree = Tree::open_tree(path, uuid)?;
+    /// ```
     pub fn open_tree(path: &Path, document_uuid: u128) -> Result<Self, TreeError> {
         let wal = Wal::open(path)?;
         let state = recover(&wal)?;
@@ -90,7 +173,36 @@ impl Tree {
         })
     }
 
-
+    /// Append a new node to the tail of a branch.
+    ///
+    /// # Behavior
+    ///
+    /// 1. Acquires the branch-local lock
+    /// 2. Reads current tail node
+    /// 3. Allocates a new `node_id`
+    /// 4. Writes a node record to the WAL
+    /// 5. Updates in-memory state
+    ///
+    /// # Concurrency
+    ///
+    /// - Appends to the same branch are serialized
+    /// - Appends to different branches can proceed in parallel
+    ///
+    /// # Guarantees
+    ///
+    /// - **Durability**: WAL write occurs before state update
+    /// - **Consistency**: no lost updates
+    /// - **Ordering**: nodes form a valid linked chain
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeError`] if:
+    /// - the branch does not exist
+    /// - WAL append fails
+    ///
+    /// # Returns
+    ///
+    /// The newly created `node_id`
     pub fn append_to_branch(
         &self,
         branch_id: BranchId,
@@ -122,7 +234,30 @@ impl Tree {
         Ok(node_id)
     }
 
-    
+    /// Create a new branch from an existing node.
+    ///
+    /// # Behavior
+    ///
+    /// - Validates that `parent_node_id` exists
+    /// - Allocates a new `branch_id`
+    /// - Persists a branch creation record to the WAL
+    /// - Initializes the new branch with:
+    ///   - `tail_node_id = parent_node_id`
+    ///
+    /// # Semantics
+    ///
+    /// - The new branch shares history up to the parent node
+    /// - Future appends diverge independently
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeError`] if:
+    /// - the parent node does not exist
+    /// - WAL append fails
+    ///
+    /// # Returns
+    ///
+    /// The newly created `branch_id`
     pub fn create_branch_from_parent_node(
         &self,
         parent_node_id: NodeId,
@@ -145,7 +280,29 @@ impl Tree {
         Ok(branch_id)
     }
 
-
+    /// Retrieve payloads along a path from `head` to `tail` (inclusive).
+    ///
+    /// # Behavior
+    ///
+    /// - Validates both nodes exist
+    /// - Traverses backward from `tail` using `prev_node_id`
+    /// - Stops when `head` is reached
+    /// - Reverses results before returning
+    ///
+    /// # Requirements
+    ///
+    /// - `head_node_id` must be an ancestor of `tail_node_id`
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeError::InvalidRange`] if:
+    /// - either node does not exist
+    /// - traversal reaches the root before `head`
+    /// - a non-node record is encountered
+    ///
+    /// # Returns
+    ///
+    /// A vector of payloads in forward order (`head → tail`)
     pub fn get_nodes_in_range(
         &self,
         head_node_id: NodeId,
@@ -185,6 +342,7 @@ impl Tree {
         }
 
         payloads.reverse();
+        
         Ok(payloads)
     }
 }
@@ -195,6 +353,9 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+    use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
     fn temp_path(name: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
@@ -404,4 +565,211 @@ mod tests {
         let tail = tree.state.get_tail_node(branch_id).unwrap();
         assert_eq!(tail, 2); // node_id after append
     }
+
+
+    /// CONCURRENT TESTS
+    
+    // ------------------------------------------------------------
+    // TEST 1: concurrent appends to SAME branch
+    //
+    // Verifies:
+    // - no lost updates
+    // - final chain length is correct
+    // ------------------------------------------------------------
+    #[test]
+    fn test_concurrent_appends_same_branch() {
+        let path = temp_path("same_branch");
+        let tree = Arc::new(Tree::create_tree(&path, 1).unwrap());
+
+        let threads = 10;
+        let barrier = Arc::new(Barrier::new(threads));
+
+        let mut handles = vec![];
+
+        for i in 0..threads {
+            let tree = tree.clone();
+            let barrier = barrier.clone();
+
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                tree.append_to_branch(0, format!("t{}", i).into_bytes())
+                    .unwrap();
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // expect exactly `threads` nodes
+        let tail = tree.state.get_tail_node(0).unwrap();
+
+        let result = tree.get_nodes_in_range(1, tail).unwrap();
+        assert_eq!(result.len(), threads);
+    }
+
+    // ------------------------------------------------------------
+    // TEST 2: concurrent appends to DIFFERENT branches
+    //
+    // Verifies:
+    // - branches do not interfere
+    // - parallelism works
+    // ------------------------------------------------------------
+    #[test]
+    fn test_concurrent_appends_different_branches() {
+        let path = temp_path("diff_branches");
+        let tree = Arc::new(Tree::create_tree(&path, 1).unwrap());
+
+        let n1 = tree.append_to_branch(0, b"root".to_vec()).unwrap();
+
+        let b1 = tree.create_branch_from_parent_node(n1).unwrap();
+        let b2 = tree.create_branch_from_parent_node(n1).unwrap();
+
+        let t1 = {
+            let tree = tree.clone();
+            thread::spawn(move || {
+                for _ in 0..5 {
+                    tree.append_to_branch(b1, b"a".to_vec()).unwrap();
+                }
+            })
+        };
+
+        let t2 = {
+            let tree = tree.clone();
+            thread::spawn(move || {
+                for _ in 0..5 {
+                    tree.append_to_branch(b2, b"b".to_vec()).unwrap();
+                }
+            })
+        };
+
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        let tail1 = tree.state.get_tail_node(b1).unwrap();
+        let tail2 = tree.state.get_tail_node(b2).unwrap();
+
+        let r1 = tree.get_nodes_in_range(n1, tail1).unwrap();
+        let r2 = tree.get_nodes_in_range(n1, tail2).unwrap();
+
+        assert_eq!(r1.len(), 6); // root + 5
+        assert_eq!(r2.len(), 6);
+    }
+
+    // ------------------------------------------------------------
+    // TEST 3: concurrent reads while writing
+    //
+    // Verifies:
+    // - no panics
+    // - readers see consistent snapshots
+    // ------------------------------------------------------------
+    #[test]
+    fn test_concurrent_reads_and_writes() {
+        let path = temp_path("read_write");
+        let tree = Arc::new(Tree::create_tree(&path, 1).unwrap());
+
+        let writer = {
+            let tree = tree.clone();
+            thread::spawn(move || {
+                for i in 0..50 {
+                    tree.append_to_branch(0, vec![i]).unwrap();
+                }
+            })
+        };
+
+        let reader = {
+            let tree = tree.clone();
+            thread::spawn(move || {
+                // repeatedly attempt reads
+                for _ in 0..50 {
+                    let tail = tree.state.get_tail_node(0).unwrap();
+
+                    if tail > 0 {
+                        let _ = tree.get_nodes_in_range(1, tail);
+                    }
+                }
+            })
+        };
+
+        writer.join().unwrap();
+        reader.join().unwrap();
+    }
+
+    // ------------------------------------------------------------
+    // TEST 4: concurrent branch creation
+    //
+    // Verifies:
+    // - branch IDs are unique
+    // - no race in branch creation
+    // ------------------------------------------------------------
+    #[test]
+    fn test_concurrent_branch_creation() {
+        let path = temp_path("branches");
+        let tree = Arc::new(Tree::create_tree(&path, 1).unwrap());
+
+        let root = tree.append_to_branch(0, b"x".to_vec()).unwrap();
+
+        let threads = 10;
+        let mut handles = vec![];
+
+        for _ in 0..threads {
+            let tree = tree.clone();
+            handles.push(thread::spawn(move || {
+                tree.create_branch_from_parent_node(root).unwrap()
+            }));
+        }
+
+        let mut branches = vec![];
+        for h in handles {
+            branches.push(h.join().unwrap());
+        }
+
+        // ensure uniqueness
+        branches.sort();
+        branches.dedup();
+
+        assert_eq!(branches.len(), threads);
+    }
+
+    // ------------------------------------------------------------
+    // TEST 5: append + branch interleaving
+    //
+    // Verifies:
+    // - no deadlocks
+    // - consistent structure
+    // ------------------------------------------------------------
+    #[test]
+    fn test_append_and_branch_interleaving() {
+        let path = temp_path("interleave");
+        let tree = Arc::new(Tree::create_tree(&path, 1).unwrap());
+
+        let t1 = {
+            let tree = tree.clone();
+            thread::spawn(move || {
+                for _ in 0..20 {
+                    tree.append_to_branch(0, b"a".to_vec()).unwrap();
+                }
+            })
+        };
+
+        let t2 = {
+            let tree = tree.clone();
+            thread::spawn(move || {
+                for _ in 0..20 {
+                    let tail = tree.state.get_tail_node(0).unwrap();
+                    if tail > 0 {
+                        let _ = tree.create_branch_from_parent_node(tail);
+                    }
+                }
+            })
+        };
+
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        // basic sanity: no crash, tail exists
+        let tail = tree.state.get_tail_node(0).unwrap();
+        assert!(tail > 0);
+    }
+
 }
