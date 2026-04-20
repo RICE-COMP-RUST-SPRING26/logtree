@@ -52,6 +52,8 @@ pub fn recover(wal: &Wal) -> Result<State, RecoveryError> {
     let state = State::new();
 
     let mut offset: Offset = 0;
+    let mut last_valid_offset = 0;
+
 
     let mut max_node_id: NodeId = 0;
     let mut max_branch_id: BranchId = 0;
@@ -87,10 +89,10 @@ pub fn recover(wal: &Wal) -> Result<State, RecoveryError> {
                     max_node_id = n.node_id;
                 }
             }
-
             Record::BranchCreate(b) => {
                 state.insert_branch(b.branch_id, b.parent_node_id);
 
+                // Track max branch id
                 if b.branch_id > max_branch_id {
                     max_branch_id = b.branch_id;
                 }
@@ -98,13 +100,19 @@ pub fn recover(wal: &Wal) -> Result<State, RecoveryError> {
         }
 
         // Advance offset using record length from header
-        let record_length = extract_record_length(&buf)?;
+        let record_length = match extract_record_length(&buf) {
+            Ok(len) => len,
+            Err(_) => break,
+        };
         offset += record_length as u64;
+        last_valid_offset = offset
     }
 
     // Restore ID generators
     state.set_last_node_id(max_node_id);
     state.set_last_branch_id(max_branch_id);
+
+    wal.truncate(last_valid_offset)?;
 
     Ok(state)
 }

@@ -66,6 +66,60 @@ impl Wal {
         })
     }
 
+    /// Truncate the WAL to the given byte offset.
+    ///
+    /// # Behavior
+    ///
+    /// - Removes all bytes after `offset`
+    /// - Ensures the file ends exactly at `offset`
+    /// - Makes the truncation durable via fsync
+    ///
+    /// # Intended Use
+    ///
+    /// Used during recovery to discard:
+    /// - partially written records
+    /// - corrupted tail data
+    ///
+    /// After truncation, the WAL is guaranteed to contain
+    /// only valid, fully written records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WalError`] if:
+    /// - the offset is beyond the current file size
+    /// - truncation fails
+    /// - fsync fails
+    ///
+    /// # Concurrency
+    ///
+    /// - Acquires the write lock to ensure exclusive access
+    /// - Safe to call during recovery before concurrent usage begins
+    pub fn truncate(&self, offset: Offset) -> Result<(), WalError> {
+        let mut inner = self
+            .write
+            .lock()
+            .map_err(|_| WalError::CorruptRecord)?;
+
+        let current_len = inner.file.metadata()?.len();
+
+        // sanity check
+        if offset > current_len {
+            return Err(WalError::CorruptRecord);
+        }
+
+        // truncate file
+        inner.file.set_len(offset)?;
+
+        // ensure truncation is durable
+        inner.file.sync_all()?;
+
+        // update in-memory offset
+        inner.current_offset = offset;
+
+        Ok(())
+    }
+    
+
     /// Appends a serialized record to the end of the WAL.
     ///
     /// # Input
